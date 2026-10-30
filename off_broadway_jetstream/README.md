@@ -49,7 +49,7 @@ The producer needs an existing stream and a durable pull consumer with
 
 ```shell
 nats stream add ORDERS --subjects "orders.>" --defaults
-nats consumer add ORDERS order-worker --pull --ack explicit --defaults
+nats consumer add ORDERS order-worker --pull --ack explicit --max-deliver 5 --defaults
 ```
 
 Alternatively, pass the consumer definition as the `:consumer` option and the producer
@@ -107,10 +107,29 @@ happens to a message once Broadway is done with it. Override them per message wi
 | Action | Sent to JetStream | Effect |
 | --- | --- | --- |
 | `:ack` | empty body (`+ACK`) | The message is done and not redelivered. |
-| `:nack` | `-NAK` | The message is redelivered right away, up to `max_deliver`. |
+| `:nack` | `-NAK` | The message is redelivered right away, up to `max_deliver` (unlimited by default). |
 | `{:nack, delay_ms}` | `-NAK {"delay": ns}` | The message is redelivered after `delay_ms`, up to `max_deliver`. |
 | `:term` | `+TERM` | The message is not redelivered and not counted as processed. |
 | `:noop` | nothing | The message is redelivered once the consumer's `ack_wait` elapses. |
+
+### Redelivery and poison messages
+
+- **`ack_wait`**: a message must be acknowledged within the consumer's `ack_wait`
+  (30 seconds by default). The producer does not extend it, so a message still in a
+  processor or batcher past `ack_wait` is delivered again while the first copy is still
+  being handled. Set `ack_wait` above your longest handling time plus `batch_timeout`,
+  and make handlers idempotent (for example keyed on
+  `message.metadata.jetstream.stream_seq` or a publisher-set `Nats-Msg-Id` header).
+- **`max_deliver`**: unlimited unless the consumer sets it. With the default
+  `on_failure: :nack`, a message that always fails is redelivered immediately and
+  forever. Always set `max_deliver`, and use `{:nack, delay_ms}` to space out retries.
+  A plain `:nack` ignores the consumer's `backoff`, which only applies to messages left
+  unacknowledged past `ack_wait`.
+- **Dead letters**: JetStream has no dead-letter queue. When a message reaches
+  `max_deliver`, the server publishes an advisory on
+  `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.<stream>.<consumer>` with the message's
+  `stream_seq`. Subscribe to it and fetch the message with
+  `Gnat.Jetstream.API.Stream.get_message/4`.
 
 ## Message metadata
 

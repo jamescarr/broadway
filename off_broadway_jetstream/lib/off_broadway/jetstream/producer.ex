@@ -31,7 +31,7 @@ defmodule OffBroadway.Jetstream.Producer do
   `ack_policy: :explicit`. All producers of the pipeline share it. Either create it
   upfront, for example with the `nats` CLI:
 
-      nats consumer add ORDERS order-worker --pull --ack explicit
+      nats consumer add ORDERS order-worker --pull --ack explicit --max-deliver 5
 
   or pass a `Gnat.Jetstream.API.Consumer` struct as the `:consumer` option and let the
   producers create it.
@@ -41,6 +41,27 @@ defmodule OffBroadway.Jetstream.Producer do
   (all processors and batchers). If the consumer sets `max_batch`, keep `:max_batch_size`
   less than or equal to it, otherwise the server rejects the pull requests with
   `409 Exceeded MaxRequestBatch`.
+
+  ### Redelivery
+
+  A message must be acknowledged within the consumer's `ack_wait` (30 seconds by
+  default), counted from its delivery. The producer does not extend that window, so a
+  message still sitting in a processor or batcher when `ack_wait` elapses is delivered
+  again, possibly to another producer, while the first copy is still being handled. Set
+  `ack_wait` above your longest handling time plus `batch_timeout`, and make handlers
+  idempotent, for example keyed on `message.metadata.jetstream.stream_seq` or on a
+  `Nats-Msg-Id` header set by the publisher.
+
+  `max_deliver` is unlimited (`-1`) unless the consumer sets it, both in NATS and in
+  `Gnat.Jetstream.API.Consumer`. With the default `on_failure: :nack`, a message that
+  always fails is then redelivered immediately and forever. Always set `max_deliver`,
+  and use `{:nack, delay_ms}` to space out retries: a plain `:nack` ignores the consumer's
+  `backoff`, which only applies to messages left unacknowledged past `ack_wait` (`:noop`).
+
+  JetStream has no dead-letter queue. When a message reaches `max_deliver`, the server
+  publishes an advisory on `$JS.EVENT.ADVISORY.CONSUMER.MAX_DELIVERIES.<stream>.<consumer>`
+  whose `stream_seq` identifies the message. Subscribe to it and fetch the message with
+  `Gnat.Jetstream.API.Stream.get_message/4` to handle dead letters.
 
   ## Acknowledgements
 
@@ -54,7 +75,7 @@ defmodule OffBroadway.Jetstream.Producer do
     * `:ack` - acknowledges the message. JetStream will not redeliver it.
 
     * `:nack` - negatively acknowledges the message. JetStream redelivers it right away,
-      up to the consumer's `max_deliver`.
+      up to the consumer's `max_deliver` (unlimited by default, see "Redelivery").
 
     * `{:nack, delay_ms}` - negatively acknowledges the message. JetStream redelivers
       it after `delay_ms` milliseconds, up to the consumer's `max_deliver`.

@@ -22,7 +22,7 @@ defmodule OffBroadway.Jetstream.AcknowledgerTest do
     end
   end
 
-  test "ack/3 logs and returns :ok when the connection is unavailable" do
+  test "ack/3 stops at the first unreachable connection, logs once and returns :ok" do
     ack_ref = {Acknowledger, :"ack_test_#{System.unique_integer([:positive])}"}
 
     Acknowledger.put_config(ack_ref, %{
@@ -33,16 +33,24 @@ defmodule OffBroadway.Jetstream.AcknowledgerTest do
 
     on_exit(fn -> :persistent_term.erase(ack_ref) end)
 
-    message = %Broadway.Message{
-      data: "data",
-      acknowledger: {Acknowledger, ack_ref, %{reply_to: "$JS.ACK.S.C.1.1.1.0.0"}}
-    }
+    message = fn reply_to, ack_data ->
+      %Broadway.Message{
+        data: "data",
+        acknowledger: {Acknowledger, ack_ref, Map.put(ack_data, :reply_to, reply_to)}
+      }
+    end
+
+    successful = [message.("$JS.ACK.S.C.1.1.1.0.0", %{}), message.("r2", %{on_success: :noop})]
+    failed = [message.("r3", %{}), message.("r4", %{})]
 
     log =
       capture_log(fn ->
-        assert Acknowledger.ack(ack_ref, [message], []) == :ok
+        assert Acknowledger.ack(ack_ref, successful, failed) == :ok
       end)
 
-    assert log =~ "failed to :ack message $JS.ACK.S.C.1.1.1.0.0"
+    # The :noop message needs no call. The first of the other three exits, so all three
+    # are left for JetStream to redeliver, with a single warning.
+    assert [_] = Regex.scan(~r/could not reach Gnat connection/, log)
+    assert log =~ "skipped 3 acknowledgement(s)"
   end
 end
