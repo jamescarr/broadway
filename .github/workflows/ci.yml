@@ -66,3 +66,40 @@ jobs:
 
       - run: mix coveralls.github
         if: ${{matrix.coverage}}
+
+  off_broadway_jetstream:
+    runs-on: ubuntu-22.04
+    env:
+      MIX_ENV: test
+    defaults:
+      run:
+        working-directory: off_broadway_jetstream
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v6
+
+      - name: Set up Erlang and Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+
+      - name: Start NATS JetStream
+        run: docker run --rm -d --network host nats:2.15.2-alpine -js
+
+      - name: Cache Mix dependencies
+        uses: actions/cache@v5
+        with:
+          # Paths are relative to the workspace, not to working-directory.
+          path: |
+            off_broadway_jetstream/deps
+            off_broadway_jetstream/_build
+          key: mix-jetstream-${{ runner.os }}-1.19-28-${{ hashFiles('off_broadway_jetstream/mix.lock') }}
+
+      - run: mix deps.get --check-locked
+
+      - run: mix format --check-formatted
+
+      - run: mix compile --warnings-as-errors
+
+      - run: mix test
